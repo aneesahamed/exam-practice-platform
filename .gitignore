@@ -1,0 +1,68 @@
+# ============================================================
+# Root .gitignore — exam-practice-platform monorepo
+# ============================================================
+
+# ── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ─────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ── Environment & Secrets ───────────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# ── Node ────────────────────────────────────────────────────
+node_modules/
+dist/
+.cache/
+*.tsbuildinfo
+
+# ── Python ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# ── AWS SAM ─────────────────────────────────────────────────
+.aws-sam/
+samconfig.toml
+*.log
+
+# ── Terraform ───────────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+crash.log
+override.tf
+override.tf.json
+
+# ── Build artefacts ─────────────────────────────────────────
+exam-platform-frontend/dist/
+exam-platform-backend/dist/
+
+# ── Content factory ─────────────────────────────────────────
+exam-content-factory/.venv/
+exam-content-factory/*.log
+exam-content-factory/*.pdf
+exam-content-factory/data/extracted-batches/
+exam-content-factory/data/retry/
+
+# ── Misc ────────────────────────────────────────────────────
+*.zip
+*.tar.gz
+bun.lockb

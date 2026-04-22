@@ -1,0 +1,8 @@
+# Prod environment variables
+# Copy to terraform.tfvars and fill in values
+# terraform.tfvars is gitignored — never commit real values
+
+environment  = "prod"
+aws_region   = "eu-west-1"
+project_name = "exam-practice-platform"
+domain_name  = "examprep.dev"   # Your custom domain
