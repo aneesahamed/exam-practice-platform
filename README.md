@@ -10,47 +10,21 @@ A production-grade, cloud-native exam preparation platform built entirely on AWS
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Users (Browser)                            │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ HTTPS
-┌──────────────────────────────▼──────────────────────────────────────┐
-│                 Amazon CloudFront + WAF                             │
-│                 Custom Domain · ACM TLS · OAC                       │
-└──────────┬──────────────────────────────────┬───────────────────────┘
-           │ Static Assets                    │ /api/*
-┌──────────▼──────────┐          ┌────────────▼────────────────────────┐
-│     Amazon S3       │          │     Amazon API Gateway (REST)       │
-│   React SPA         │          │     Cognito JWT Authorizer          │
-│   (private bucket)  │          └────────────┬────────────────────────┘
-└─────────────────────┘                       │ Lambda Proxy
-                               ┌──────────────▼──────────────────────┐
-                               │        AWS Lambda Functions         │
-                               │   Node.js 20 · arm64 · esbuild      │
-                               │  ┌────────────┐ ┌────────────────┐  │
-                               │  │ Questions  │ │Progress · Flags│  │
-                               │  └─────┬──────┘ └───────┬────────┘  │
-                               └────────┼────────────────┼───────────┘
-                                        │                │
-                               ┌────────▼──────┐ ┌───────▼───────────┐
-                               │  Amazon S3    │ │  Amazon DynamoDB  │
-                               │  Questions    │ │  Progress + Flags │
-                               │  Dataset      │ │  PAY_PER_REQUEST  │
-                               └───────────────┘ └───────────────────┘
+> **[📐 Open Interactive Diagram](./docs/architecture.drawio)** — open with [draw.io](https://app.diagrams.net) for the full AWS icon diagram
 
-                               ┌─────────────────────────────────────┐
-                               │       Amazon Cognito User Pool      │
-                               │    SRP Auth · JWT · Token Rotation  │
-                               └─────────────────────────────────────┘
+![Architecture](./docs/architecture.drawio)
 
-                               ┌─────────────────────────────────────┐
-                               │     Content Factory (Offline)       │
-                               │  PDF → AWS Bedrock Batch API        │
-                               │  Claude 3.5 Sonnet v2               │
-                               │  1,003 enriched questions · $9.65   │
-                               └─────────────────────────────────────┘
-```
+| Layer | Services |
+|---|---|
+| Edge | CloudFront · WAF · Route 53 · ACM |
+| Frontend | S3 (private, OAC) · React SPA |
+| Auth | Cognito User Pool · SRP · JWT |
+| API | API Gateway REST · Cognito Authorizer |
+| Compute | Lambda (Node.js 20, arm64) × 9 functions |
+| Data | DynamoDB (progress + flags) · S3 (questions dataset) |
+| Content | AWS Bedrock · Claude 3.5 Sonnet v2 · Batch API |
+| IaC | Terraform · AWS SAM |
+| CI/CD | GitHub Actions (3 pipelines) |
 
 ---
 
