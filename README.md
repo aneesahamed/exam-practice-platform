@@ -10,9 +10,7 @@ A production-grade, cloud-native exam preparation platform built entirely on AWS
 
 ## Architecture
 
-> **[📐 Open Interactive Diagram](./docs/architecture.drawio)** — open with [draw.io](https://app.diagrams.net) for the full AWS icon diagram
-
-![Architecture](./docs/architecture.drawio)
+![Architecture](./docs/architecture.png)
 
 | Layer | Services |
 |---|---|
@@ -25,6 +23,8 @@ A production-grade, cloud-native exam preparation platform built entirely on AWS
 | Content | AWS Bedrock · Claude 3.5 Sonnet v2 · Batch API |
 | IaC | Terraform · AWS SAM |
 | CI/CD | GitHub Actions (3 pipelines) |
+
+---
 
 ---
 
