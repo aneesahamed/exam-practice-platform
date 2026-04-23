@@ -1,0 +1,330 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  exam-platform-backend
+  Serverless API for exam practice platform — Lambda + API Gateway
+  Infrastructure (Cognito, DynamoDB, S3) managed by Terraform.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  CognitoUserPoolArn:
+    Type: String
+    Description: ARN of the Cognito User Pool (from Terraform output)
+  QuestionsBucketName:
+    Type: String
+    Description: S3 bucket name for questions dataset (from Terraform output)
+  ProgressTableName:
+    Type: String
+    Description: DynamoDB progress table name (from Terraform output)
+  FlagsTableName:
+    Type: String
+    Description: DynamoDB flags table name (from Terraform output)
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs20.x
+    MemorySize: 512
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        QUESTIONS_BUCKET: !Ref QuestionsBucketName
+        PROGRESS_TABLE: !Ref ProgressTableName
+        FLAGS_TABLE: !Ref FlagsTableName
+        NODE_ENV: production
+        ENVIRONMENT: !Ref Environment
+
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
+
+Resources:
+  # API Gateway
+  ExamApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'exam-practice-platform-${Environment}-api'
+      StageName: !Ref Environment
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Ref CognitoUserPoolArn
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: sam
+        Project: exam-practice-platform
+
+  # Health Check
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-health'
+      CodeUri: ./
+      Handler: dist/handlers/health.handler
+      Description: Health check endpoint
+      Events:
+        HealthApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /health
+            Method: get
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/health.ts
+
+  # Get Questions
+  GetQuestionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-get-questions'
+      CodeUri: ./
+      Handler: dist/handlers/questions.getQuestions
+      Description: Fetch questions from S3 with filtering, pagination, shuffle
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref QuestionsBucketName
+      Events:
+        GetQuestionsApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /questions
+            Method: get
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/questions.ts
+
+  # Record Progress
+  RecordProgressFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-record-progress'
+      CodeUri: ./
+      Handler: dist/handlers/progress-record.handler
+      Description: Record a user question attempt
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProgressTableName
+      Events:
+        RecordProgressApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /progress/attempt
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/progress-record.ts
+
+  # Get Progress Stats
+  GetProgressStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-get-progress-stats'
+      CodeUri: ./
+      Handler: dist/handlers/progress-stats.handler
+      Description: Get user progress statistics
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProgressTableName
+      Events:
+        GetStatsApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /progress/stats
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/progress-stats.ts
+
+  # Get Incorrect Questions
+  GetIncorrectQuestionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-get-incorrect'
+      CodeUri: ./
+      Handler: dist/handlers/progress-incorrect.handler
+      Description: Get questions answered incorrectly
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProgressTableName
+      Events:
+        GetIncorrectApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /progress/incorrect
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/progress-incorrect.ts
+
+  # Put Flag
+  PutFlagFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-put-flag'
+      CodeUri: ./
+      Handler: dist/handlers/flags-put.handler
+      Description: Create or update a question flag
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FlagsTableName
+      Events:
+        PutFlagApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /flags/{questionId}
+            Method: put
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/flags-put.ts
+
+  # Delete Flag
+  DeleteFlagFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-delete-flag'
+      CodeUri: ./
+      Handler: dist/handlers/flags-delete.handler
+      Description: Delete a question flag
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FlagsTableName
+      Events:
+        DeleteFlagApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /flags/{questionId}
+            Method: delete
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/flags-delete.ts
+
+  # List Flags
+  ListFlagsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-list-flags'
+      CodeUri: ./
+      Handler: dist/handlers/flags-list.handler
+      Description: List flagged questions
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref FlagsTableName
+      Events:
+        ListFlagsApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /flags
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/flags-list.ts
+
+  # Flags Summary
+  GetFlagsSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'exam-practice-platform-${Environment}-get-flags-summary'
+      CodeUri: ./
+      Handler: dist/handlers/flags-summary.handler
+      Description: Get flag counts by type
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref FlagsTableName
+      Events:
+        GetFlagsSummaryApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ExamApi
+            Path: /flags/summary
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/handlers/flags-summary.ts
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ExamApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
+    Export:
+      Name: !Sub 'exam-practice-platform-${Environment}-ApiUrl'
+
+  ApiId:
+    Description: API Gateway ID
+    Value: !Ref ExamApi

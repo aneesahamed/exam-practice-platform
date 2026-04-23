@@ -1,0 +1,36 @@
+{
+  "name": "exam-platform-backend",
+  "version": "1.0.0",
+  "description": "AWS Serverless backend for exam practice platform",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "test:unit": "jest tests/unit",
+    "local": "sam build && sam local start-api",
+    "deploy": "sam build && sam deploy",
+    "clean": "rm -rf dist .aws-sam"
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "serverless",
+    "exam",
+    "education"
+  ],
+  "author": "Anees Ahamed",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.962.0",
+    "@aws-sdk/client-s3": "^3.699.0",
+    "@aws-sdk/lib-dynamodb": "^3.962.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.17.10",
+    "esbuild": "^0.27.2",
+    "jest": "^29.7.0",
+    "typescript": "^5.7.2"
+  }
+}

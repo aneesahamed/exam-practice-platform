@@ -6,15 +6,18 @@ on:
     paths:
       - 'exam-platform-backend/**'
       - '.github/workflows/backend-ci.yml'
+      - '.github/workflows/terraform-ci.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'exam-platform-backend/**'
 
-# Prevent concurrent deployments to the same environment
 concurrency:
   group: backend-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  AWS_REGION: 'eu-west-1'
 
 jobs:
   # ── Build & Test ────────────────────────────────────────────────────────────
@@ -45,13 +48,13 @@ jobs:
         working-directory: exam-platform-backend
         run: npm test -- --passWithNoTests
 
-  # ── Deploy to Dev ───────────────────────────────────────────────────────────
-  deploy-dev:
-    name: Deploy to Dev
+  # ── Deploy (reads Terraform outputs dynamically) ────────────────────────────
+  deploy:
+    name: Deploy — ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-    environment: dev
+    if: github.event_name == 'push'
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
     steps:
       - name: Checkout
@@ -69,72 +72,61 @@ jobs:
         with:
           use-installer: true
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.7.0'
+          terraform_wrapper: false
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-west-1
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Read Terraform outputs
+        id: tf
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure
+          echo "cognito_user_pool_arn=$(aws cognito-idp describe-user-pool \
+            --user-pool-id $(terraform output -raw cognito_user_pool_id) \
+            --query 'UserPool.Arn' --output text)"         >> $GITHUB_OUTPUT
+          echo "questions_bucket=$(terraform output -raw questions_bucket_name)" >> $GITHUB_OUTPUT
+          echo "progress_table=$(terraform output -raw progress_table_name)"     >> $GITHUB_OUTPUT
+          echo "flags_table=$(terraform output -raw flags_table_name)"           >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        working-directory: exam-platform-backend
+        run: npm ci
 
       - name: SAM Build
         working-directory: exam-platform-backend
         run: sam build
 
-      - name: SAM Deploy (Dev)
+      - name: SAM Deploy
         working-directory: exam-platform-backend
         run: |
           sam deploy \
-            --stack-name exam-practice-platform-backend-dev \
-            --s3-bucket ${{ secrets.SAM_DEPLOY_BUCKET }} \
+            --stack-name exam-practice-platform-backend-${{ steps.env.outputs.environment }} \
+            --region ${{ env.AWS_REGION }} \
             --capabilities CAPABILITY_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --resolve-s3 \
             --parameter-overrides \
-              Environment=dev
-
-  # ── Deploy to Prod ──────────────────────────────────────────────────────────
-  deploy-prod:
-    name: Deploy to Prod
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: prod
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: exam-platform-backend/package-lock.json
-
-      - name: Setup AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
-        with:
-          use-installer: true
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-west-1
-
-      - name: SAM Build
-        working-directory: exam-platform-backend
-        run: sam build
-
-      - name: SAM Deploy (Prod)
-        working-directory: exam-platform-backend
-        run: |
-          sam deploy \
-            --stack-name exam-practice-platform-backend-prod \
-            --s3-bucket ${{ secrets.SAM_DEPLOY_BUCKET }} \
-            --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment=prod
+              Environment=${{ steps.env.outputs.environment }} \
+              CognitoUserPoolArn=${{ steps.tf.outputs.cognito_user_pool_arn }} \
+              QuestionsBucketName=${{ steps.tf.outputs.questions_bucket }} \
+              ProgressTableName=${{ steps.tf.outputs.progress_table }} \
+              FlagsTableName=${{ steps.tf.outputs.flags_table }}
