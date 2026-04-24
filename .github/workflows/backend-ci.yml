@@ -110,6 +110,9 @@ jobs:
         working-directory: exam-platform-backend
         run: npm ci
 
+      - name: Install esbuild globally
+        run: npm install -g esbuild
+
       - name: SAM Build
         working-directory: exam-platform-backend
         run: sam build

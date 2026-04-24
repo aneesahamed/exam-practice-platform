@@ -43,7 +43,7 @@ export function Login() {
       
       // Successfully signed in
       navigate('/');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Login error:', err);
       // Error is already set by AuthContext
     }
