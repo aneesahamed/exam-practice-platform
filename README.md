@@ -2,9 +2,7 @@
 
 A production-grade, cloud-native exam preparation platform built entirely on AWS serverless architecture. Demonstrates end-to-end ownership of infrastructure, backend, frontend, and AI-powered content generation.
 
-[![Backend CI/CD](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/backend-ci.yml)
-[![Frontend CI/CD](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/frontend-ci.yml)
-[![Terraform CI/CD](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/terraform-ci.yml/badge.svg)](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/terraform-ci.yml)
+[![Deploy](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/deploy.yml/badge.svg)](https://github.com/aneesahamed/exam-practice-platform/actions/workflows/deploy.yml)
 
 ---
 

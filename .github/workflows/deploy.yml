@@ -1,0 +1,279 @@
+name: Deploy
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: 'eu-west-1'
+  TF_VERSION: '1.7.0'
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 1: Terraform — provision all AWS infrastructure
+  # Runs first. All other jobs wait for this to complete.
+  # ════════════════════════════════════════════════════════════════════════════
+  terraform:
+    name: Terraform ${{ github.event_name == 'pull_request' && 'Plan' || 'Apply' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    outputs:
+      environment:                 ${{ steps.env.outputs.environment }}
+      cognito_user_pool_id:        ${{ steps.tf_outputs.outputs.cognito_user_pool_id }}
+      cognito_user_pool_client_id: ${{ steps.tf_outputs.outputs.cognito_user_pool_client_id }}
+      cognito_user_pool_arn:       ${{ steps.tf_outputs.outputs.cognito_user_pool_arn }}
+      questions_bucket:            ${{ steps.tf_outputs.outputs.questions_bucket }}
+      frontend_bucket:             ${{ steps.tf_outputs.outputs.frontend_bucket }}
+      cloudfront_id:               ${{ steps.tf_outputs.outputs.cloudfront_id }}
+      cloudfront_domain:           ${{ steps.tf_outputs.outputs.cloudfront_domain }}
+      progress_table:              ${{ steps.tf_outputs.outputs.progress_table }}
+      flags_table:                 ${{ steps.tf_outputs.outputs.flags_table }}
+      sam_bucket:                  ${{ steps.tf_outputs.outputs.sam_bucket }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var="environment=${{ steps.env.outputs.environment }}" \
+            -out=tfplan \
+            -no-color 2>&1 | tee plan_output.txt
+
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/plan_output.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.substring(0, 60000) + '\n...[truncated]' : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Terraform Plan 📋\n\`\`\`\n${truncated}\n\`\`\`\n*Pushed by: @${{ github.actor }}*`
+            });
+
+      - name: Terraform Apply
+        if: github.event_name == 'push'
+        run: |
+          terraform apply \
+            -var="environment=${{ steps.env.outputs.environment }}" \
+            -auto-approve \
+            -no-color
+
+      - name: Capture Terraform outputs
+        id: tf_outputs
+        if: github.event_name == 'push'
+        run: |
+          POOL_ID=$(terraform output -raw cognito_user_pool_id)
+          POOL_ARN=$(aws cognito-idp describe-user-pool \
+            --user-pool-id "$POOL_ID" \
+            --query 'UserPool.Arn' --output text)
+
+          echo "cognito_user_pool_id=$POOL_ID"                                    >> $GITHUB_OUTPUT
+          echo "cognito_user_pool_client_id=$(terraform output -raw cognito_user_pool_client_id)" >> $GITHUB_OUTPUT
+          echo "cognito_user_pool_arn=$POOL_ARN"                                  >> $GITHUB_OUTPUT
+          echo "questions_bucket=$(terraform output -raw questions_bucket_name)"  >> $GITHUB_OUTPUT
+          echo "frontend_bucket=$(terraform output -raw frontend_bucket_name)"    >> $GITHUB_OUTPUT
+          echo "cloudfront_id=$(terraform output -raw cloudfront_distribution_id)" >> $GITHUB_OUTPUT
+          echo "cloudfront_domain=$(terraform output -raw cloudfront_domain_name)" >> $GITHUB_OUTPUT
+          echo "progress_table=$(terraform output -raw progress_table_name)"      >> $GITHUB_OUTPUT
+          echo "flags_table=$(terraform output -raw flags_table_name)"            >> $GITHUB_OUTPUT
+          echo "sam_bucket=$(terraform output -raw sam_deploy_bucket_name)"       >> $GITHUB_OUTPUT
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2: Backend — build and deploy Lambda functions
+  # Waits for terraform job. Receives all resource names as inputs.
+  # ════════════════════════════════════════════════════════════════════════════
+  backend:
+    name: Backend — Build & Deploy
+    needs: terraform
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    environment: ${{ needs.terraform.outputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: exam-platform-backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: exam-platform-backend
+        run: npm ci
+
+      - name: Type check
+        working-directory: exam-platform-backend
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: exam-platform-backend
+        run: npm test -- --passWithNoTests
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Install esbuild
+        run: npm install -g esbuild
+
+      - name: SAM Build
+        working-directory: exam-platform-backend
+        run: sam build
+
+      - name: SAM Deploy
+        working-directory: exam-platform-backend
+        run: |
+          sam deploy \
+            --stack-name exam-practice-platform-backend-${{ needs.terraform.outputs.environment }} \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --s3-bucket ${{ needs.terraform.outputs.sam_bucket }} \
+            --parameter-overrides \
+              Environment=${{ needs.terraform.outputs.environment }} \
+              CognitoUserPoolArn=${{ needs.terraform.outputs.cognito_user_pool_arn }} \
+              QuestionsBucketName=${{ needs.terraform.outputs.questions_bucket }} \
+              ProgressTableName=${{ needs.terraform.outputs.progress_table }} \
+              FlagsTableName=${{ needs.terraform.outputs.flags_table }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 3: Frontend — build and deploy React SPA
+  # Waits for terraform job. Also waits for backend (needs API URL).
+  # ════════════════════════════════════════════════════════════════════════════
+  frontend:
+    name: Frontend — Build & Deploy
+    needs: [terraform, backend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    environment: ${{ needs.terraform.outputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: exam-platform-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: exam-platform-frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: exam-platform-frontend
+        run: npm run lint
+
+      - name: Type check
+        working-directory: exam-platform-frontend
+        run: npx tsc --noEmit
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Get API URL from backend stack
+        id: api
+        run: |
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name exam-practice-platform-backend-${{ needs.terraform.outputs.environment }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' \
+            --output text)
+          echo "url=${API_URL}" >> $GITHUB_OUTPUT
+
+      - name: Build
+        working-directory: exam-platform-frontend
+        run: npm run build
+        env:
+          VITE_API_BASE_URL:         ${{ steps.api.outputs.url }}
+          VITE_COGNITO_USER_POOL_ID: ${{ needs.terraform.outputs.cognito_user_pool_id }}
+          VITE_COGNITO_CLIENT_ID:    ${{ needs.terraform.outputs.cognito_user_pool_client_id }}
+          VITE_AWS_REGION:           ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
+        working-directory: exam-platform-frontend
+        run: |
+          # Hashed assets — cache for 1 year (filename changes when content changes)
+          aws s3 sync dist/ s3://${{ needs.terraform.outputs.frontend_bucket }} \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html"
+
+          # index.html — never cache (SPA entry point must always be fresh)
+          aws s3 cp dist/index.html \
+            s3://${{ needs.terraform.outputs.frontend_bucket }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ needs.terraform.outputs.cloudfront_id }} \
+            --paths "/*"
+
+      - name: Print live URL
+        run: echo "✅ Live at https://${{ needs.terraform.outputs.cloudfront_domain }}"
