@@ -47,3 +47,15 @@ variable "questions_s3_key" {
   type        = string
   default     = "AWS-SAA-C03-2025.01-all-questions.json"
 }
+
+variable "alarm_email" {
+  description = "Email address for CloudWatch alarm notifications. Leave empty to skip."
+  type        = string
+  default     = ""
+}
+
+variable "waf_enabled" {
+  description = "Enable WAF Web ACL on CloudFront. Costs $5/month — disabled by default."
+  type        = bool
+  default     = false
+}

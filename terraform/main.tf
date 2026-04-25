@@ -36,3 +36,41 @@ module "frontend_hosting" {
     aws.us_east_1 = aws.us_east_1
   }
 }
+
+module "observability" {
+  source = "./modules/observability"
+
+  project_name = var.project_name
+  environment  = var.environment
+  alarm_email  = var.alarm_email
+
+  lambda_function_names = [
+    "exam-practice-platform-${var.environment}-health",
+    "exam-practice-platform-${var.environment}-get-questions",
+    "exam-practice-platform-${var.environment}-record-progress",
+    "exam-practice-platform-${var.environment}-get-progress-stats",
+    "exam-practice-platform-${var.environment}-get-incorrect",
+    "exam-practice-platform-${var.environment}-put-flag",
+    "exam-practice-platform-${var.environment}-delete-flag",
+    "exam-practice-platform-${var.environment}-list-flags",
+    "exam-practice-platform-${var.environment}-get-flags-summary",
+  ]
+
+  dynamodb_table_names = [
+    module.storage.progress_table_name,
+    module.storage.flags_table_name,
+  ]
+}
+
+module "waf" {
+  source = "./modules/waf"
+
+  project_name = var.project_name
+  environment  = var.environment
+  enabled      = var.waf_enabled
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+}

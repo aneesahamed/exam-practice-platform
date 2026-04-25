@@ -30,6 +30,7 @@ Globals:
     MemorySize: 512
     Architectures:
       - arm64
+    Tracing: Active
     Environment:
       Variables:
         QUESTIONS_BUCKET: !Ref QuestionsBucketName
