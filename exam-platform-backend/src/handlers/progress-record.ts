@@ -1,6 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
@@ -15,85 +15,57 @@ interface RecordProgressRequest {
   difficulty?: string;
 }
 
-interface ProgressItem {
-  PK: string;  // USER#<cognitoSub>
-  SK: string;  // QUESTION#<questionId>
-  question_id: string;
-  selected_answer: string;
-  is_correct: boolean;
-  attempts: number;
-  last_attempt_at: string;
-  first_attempt_at?: string;
-  time_spent_seconds?: number;
-  difficulty?: string;
-  updated_at: string;
-}
+const CORS_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+};
 
 /**
- * Lambda handler to record a question attempt
  * POST /progress/attempt
- * Requires Cognito authentication
+ *
+ * Records a question attempt atomically:
+ *   - First attempt: sets first_attempt_at, attempts = 1
+ *   - Subsequent attempts: increments attempts counter, updates last_attempt_at
+ *
+ * Uses a single UpdateCommand with ADD for atomic increment —
+ * no GET → PUT race condition, no attempts counter reset.
  */
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  console.log('Event:', JSON.stringify(event, null, 2));
-
-  // Extract user ID from Cognito JWT
+export const handler = async (
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> => {
   const userId = event.requestContext?.authorizer?.claims?.sub;
   if (!userId) {
     return {
       statusCode: 401,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        success: false,
-        error: 'Unauthorized - missing user ID',
-      }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ success: false, error: 'Unauthorized' }),
     };
   }
 
-  // Parse request body
   if (!event.body) {
     return {
       statusCode: 400,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        success: false,
-        error: 'Missing request body',
-      }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ success: false, error: 'Missing request body' }),
     };
   }
 
-  let requestBody: RecordProgressRequest;
+  let body: RecordProgressRequest;
   try {
-    requestBody = JSON.parse(event.body);
-  } catch (error) {
+    body = JSON.parse(event.body);
+  } catch {
     return {
       statusCode: 400,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        success: false,
-        error: 'Invalid JSON in request body',
-      }),
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ success: false, error: 'Invalid JSON' }),
     };
   }
 
-  // Validate required fields
-  const { question_id, selected_answer, is_correct } = requestBody;
+  const { question_id, selected_answer, is_correct } = body;
   if (!question_id || selected_answer === undefined || is_correct === undefined) {
     return {
       statusCode: 400,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         success: false,
         error: 'Missing required fields: question_id, selected_answer, is_correct',
@@ -101,96 +73,68 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   }
 
+  const now = new Date().toISOString();
+
   try {
-    const now = new Date().toISOString();
-    const pk = `USER#${userId}`;
-    const sk = `QUESTION#${question_id}`;
+    /**
+     * Single atomic UpdateCommand:
+     *
+     * - ADD attempts 1          → increments on every call (starts at 0, becomes 1 on first call)
+     * - SET selected_answer     → always update to latest answer
+     * - SET is_correct          → always update to latest result
+     * - SET last_attempt_at     → always update
+     * - SET updated_at          → always update
+     * - SET first_attempt_at    → only set if attribute does not exist yet (if_not_exists)
+     * - SET question_id         → always set (needed for queries)
+     *
+     * This is the correct DynamoDB pattern for an incrementing counter.
+     * No GET required, no race condition, no reset.
+     */
+    await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: `QUESTION#${question_id}`,
+        },
+        UpdateExpression: `
+          ADD attempts :inc
+          SET selected_answer    = :selected_answer,
+              is_correct         = :is_correct,
+              last_attempt_at    = :now,
+              updated_at         = :now,
+              first_attempt_at   = if_not_exists(first_attempt_at, :now),
+              question_id        = if_not_exists(question_id, :question_id),
+              time_spent_seconds = if_not_exists(time_spent_seconds, :time_spent),
+              difficulty         = if_not_exists(difficulty, :difficulty)
+        `,
+        ExpressionAttributeValues: {
+          ':inc':             1,
+          ':selected_answer': selected_answer,
+          ':is_correct':      is_correct,
+          ':now':             now,
+          ':question_id':     question_id,
+          ':time_spent':      body.time_spent_seconds ?? null,
+          ':difficulty':      body.difficulty ?? null,
+        },
+      })
+    );
 
-    // Check if this is a new attempt or updating existing
-    // For now, we'll use PUT with attribute_not_exists to set first_attempt_at
-    // and increment attempts counter
-    
-    const item: ProgressItem = {
-      PK: pk,
-      SK: sk,
-      question_id,
-      selected_answer,
-      is_correct,
-      attempts: 1,  // Will be incremented if item exists
-      last_attempt_at: now,
-      updated_at: now,
-    };
-
-    // Add optional fields
-    if (requestBody.time_spent_seconds !== undefined) {
-      item.time_spent_seconds = requestBody.time_spent_seconds;
-    }
-    if (requestBody.difficulty) {
-      item.difficulty = requestBody.difficulty;
-    }
-
-    // Use UpdateExpression for atomic increment of attempts
-    // This is more reliable than GET -> PUT pattern
-    const command = new PutCommand({
-      TableName: TABLE_NAME,
-      Item: item,
-      // Set first_attempt_at only if it doesn't exist
-      ConditionExpression: 'attribute_not_exists(PK)',
-    });
-
-    // First attempt - set first_attempt_at
-    item.first_attempt_at = now;
-    
-    try {
-      await docClient.send(command);
-      console.log(`Recorded first attempt for ${userId}/${question_id}`);
-    } catch (error: any) {
-      // If condition fails, item exists - update it instead
-      if (error.name === 'ConditionalCheckFailedException') {
-        // Item exists, update without setting first_attempt_at
-        delete item.first_attempt_at;
-        
-        // For subsequent attempts, we need to increment the counter
-        // This is a simplified approach - in production, use UpdateExpression
-        const updateCommand = new PutCommand({
-          TableName: TABLE_NAME,
-          Item: {
-            ...item,
-            // Note: This will overwrite attempts to 1
-            // In production, use UpdateExpression with ADD
-          },
-        });
-        
-        await docClient.send(updateCommand);
-        console.log(`Updated existing attempt for ${userId}/${question_id}`);
-      } else {
-        throw error;
-      }
-    }
+    console.log(`Recorded attempt for ${userId}/${question_id}`);
 
     return {
       statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         success: true,
-        data: {
-          user_id: userId,
-          question_id,
-          recorded_at: now,
-        },
+        data: { user_id: userId, question_id, recorded_at: now },
       }),
     };
   } catch (error) {
     console.error('Error recording progress:', error);
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      headers: CORS_HEADERS,
       body: JSON.stringify({
         success: false,
         error: 'Internal server error',
