@@ -117,3 +117,4 @@ jobs:
           echo "cloudfront_domain_name=$(terraform output -raw cloudfront_domain_name)"           >> $GITHUB_OUTPUT
           echo "progress_table_name=$(terraform output -raw progress_table_name)"                 >> $GITHUB_OUTPUT
           echo "flags_table_name=$(terraform output -raw flags_table_name)"                       >> $GITHUB_OUTPUT
+          echo "sam_deploy_bucket=$(terraform output -raw sam_deploy_bucket_name)"                >> $GITHUB_OUTPUT

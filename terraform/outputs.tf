@@ -8,6 +8,11 @@
  *   terraform output -raw <output_name>
  */
 
+output "sam_deploy_bucket_name" {
+  description = "S3 bucket for SAM deployment artefacts"
+  value       = module.storage.sam_deploy_bucket_name
+}
+
 output "questions_bucket_name" {
   description = "S3 bucket name for the questions dataset"
   value       = module.storage.questions_bucket_name

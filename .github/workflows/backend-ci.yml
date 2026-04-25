@@ -105,6 +105,7 @@ jobs:
           echo "questions_bucket=$(terraform output -raw questions_bucket_name)" >> $GITHUB_OUTPUT
           echo "progress_table=$(terraform output -raw progress_table_name)"     >> $GITHUB_OUTPUT
           echo "flags_table=$(terraform output -raw flags_table_name)"           >> $GITHUB_OUTPUT
+          echo "sam_bucket=$(terraform output -raw sam_deploy_bucket_name)"      >> $GITHUB_OUTPUT
 
       - name: Install dependencies
         working-directory: exam-platform-backend
@@ -126,7 +127,7 @@ jobs:
             --capabilities CAPABILITY_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --resolve-s3 \
+            --s3-bucket ${{ steps.tf.outputs.sam_bucket }} \
             --parameter-overrides \
               Environment=${{ steps.env.outputs.environment }} \
               CognitoUserPoolArn=${{ steps.tf.outputs.cognito_user_pool_arn }} \

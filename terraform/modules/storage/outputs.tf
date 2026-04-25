@@ -27,3 +27,8 @@ output "flags_table_arn" {
   description = "DynamoDB flags table ARN — used in Lambda IAM policies"
   value       = aws_dynamodb_table.flags.arn
 }
+
+output "sam_deploy_bucket_name" {
+  description = "S3 bucket for SAM deployment artefacts"
+  value       = aws_s3_bucket.sam_deploy.bucket
+}
