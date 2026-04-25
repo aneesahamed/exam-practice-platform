@@ -63,7 +63,7 @@ resource "aws_route53_health_check" "primary_api" {
 # Secondary record — serves traffic when primary health check fails
 
 resource "aws_route53_record" "api_primary" {
-  count   = var.enabled && var.route53_zone_id != "" ? 1 : 0
+  count   = var.enabled && var.domain_name != "" ? 1 : 0
   zone_id = var.route53_zone_id
   name    = "api.${var.domain_name}"
   type    = "CNAME"
@@ -80,7 +80,7 @@ resource "aws_route53_record" "api_primary" {
 }
 
 resource "aws_route53_record" "api_secondary" {
-  count   = var.enabled && var.route53_zone_id != "" ? 1 : 0
+  count   = var.enabled && var.domain_name != "" ? 1 : 0
   zone_id = var.route53_zone_id
   name    = "api.${var.domain_name}"
   type    = "CNAME"
