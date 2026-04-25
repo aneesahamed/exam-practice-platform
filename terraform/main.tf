@@ -74,3 +74,17 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 }
+
+module "multi_region" {
+  source = "./modules/multi-region"
+
+  project_name       = var.project_name
+  environment        = var.environment
+  enabled            = var.multi_region_enabled
+  progress_table_arn = module.storage.progress_table_arn
+  flags_table_arn    = module.storage.flags_table_arn
+  primary_api_fqdn   = var.primary_api_fqdn
+  secondary_api_fqdn = var.secondary_api_fqdn
+  domain_name        = var.domain_name
+  route53_zone_id    = module.frontend_hosting.route53_zone_id != null ? module.frontend_hosting.route53_zone_id : ""
+}

@@ -1,8 +1,6 @@
-# Dev environment variables
-# Copy to terraform.tfvars and fill in values
-# terraform.tfvars is gitignored — never commit real values
-
 environment  = "dev"
 aws_region   = "eu-west-1"
 project_name = "exam-practice-platform"
-domain_name  = ""   # Leave empty to use CloudFront URL in dev
+domain_name  = "aws.aneesahamed.co.uk"
+alarm_email  = ""
+waf_enabled  = false

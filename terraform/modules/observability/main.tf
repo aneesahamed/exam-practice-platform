@@ -61,7 +61,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   metric_name         = "Duration"
   namespace           = "AWS/Lambda"
   period              = 60
-  statistic           = "p99"
+  statistic           = "Maximum"
   threshold           = 25000 # 25 seconds — Lambda timeout is 30s
   treat_missing_data  = "notBreaching"
 

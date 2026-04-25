@@ -23,6 +23,16 @@ output "frontend_bucket_name" {
   value       = module.frontend_hosting.frontend_bucket_name
 }
 
+output "site_url" {
+  description = "Live URL — custom domain if configured, otherwise CloudFront URL"
+  value       = module.frontend_hosting.site_url
+}
+
+output "route53_name_servers" {
+  description = "NS records to add in GoDaddy for subdomain delegation"
+  value       = module.frontend_hosting.route53_name_servers
+}
+
 output "cloudfront_distribution_id" {
   description = "CloudFront distribution ID — used to invalidate cache after frontend deploy"
   value       = module.frontend_hosting.cloudfront_distribution_id

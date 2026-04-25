@@ -2,23 +2,29 @@
  * Frontend Hosting Module
  *
  * Provisions:
- *   - S3 bucket for React SPA (private — CloudFront only access)
- *   - CloudFront distribution (HTTPS, HTTP→HTTPS redirect, SPA routing)
- *   - ACM certificate (us-east-1 — CloudFront requirement)
- *   - Route 53 record (optional — only if domain_name is provided)
+ *   - S3 bucket for React SPA (private — CloudFront OAC only)
+ *   - CloudFront distribution (HTTPS, SPA routing, OAC)
+ *   - ACM certificate in us-east-1 (CloudFront requirement)
+ *   - Route 53 hosted zone for subdomain (when domain_name is set)
+ *   - Route 53 alias record → CloudFront
+ *   - ACM DNS validation records in Route 53 (fully automated)
  *
- * Design decisions:
- *   - Origin Access Control (OAC): replaces legacy OAI, more secure
- *   - S3 bucket is fully private: no direct public access possible
- *   - SPA routing: 403/404 → index.html (React Router handles the rest)
- *   - HTTPS only: HTTP redirected to HTTPS at CloudFront edge
- *   - Price class ALL: global edge locations for best performance
+ * When domain_name = "" (default):
+ *   - CloudFront URL only, no custom domain, no Route 53, no ACM
+ *
+ * When domain_name = "aws.aneesahamed.co.uk":
+ *   - Route 53 hosted zone created for aws.aneesahamed.co.uk
+ *   - ACM certificate issued and auto-validated via Route 53
+ *   - CloudFront alias record created
+ *   - You add the NS records from Route 53 to GoDaddy once (manual, 5 min)
  *
  * Interview talking point:
- *   "CloudFront sits in front of S3 — users never hit S3 directly.
- *    OAC signs requests with SigV4, so even if someone finds the bucket
- *    name they can't access it without going through CloudFront."
+ *   "I delegated the subdomain from GoDaddy to Route 53 by adding NS records.
+ *    Route 53 manages all DNS for the subdomain — alias record to CloudFront,
+ *    ACM certificate validation. Everything is in Terraform, fully reproducible."
  */
+
+data "aws_caller_identity" "current" {}
 
 # ── S3: Frontend Static Assets ───────────────────────────────────────────────
 
@@ -88,6 +94,17 @@ data "aws_iam_policy_document" "frontend_bucket_policy" {
   }
 }
 
+# ── Route 53: Hosted Zone for subdomain ──────────────────────────────────────
+# Created only when domain_name is provided.
+# After apply, copy the NS records shown in outputs to GoDaddy DNS.
+
+resource "aws_route53_zone" "frontend" {
+  count = var.domain_name != "" ? 1 : 0
+  name  = var.domain_name
+
+  comment = "Managed by Terraform — ${var.project_name} ${var.environment}"
+}
+
 # ── ACM Certificate (must be in us-east-1 for CloudFront) ───────────────────
 
 resource "aws_acm_certificate" "frontend" {
@@ -101,6 +118,35 @@ resource "aws_acm_certificate" "frontend" {
   lifecycle {
     create_before_destroy = true
   }
+}
+
+# ── ACM DNS Validation records in Route 53 (fully automated) ─────────────────
+
+resource "aws_route53_record" "acm_validation" {
+  for_each = var.domain_name != "" ? {
+    for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  } : {}
+
+  zone_id = aws_route53_zone.frontend[0].zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 60
+}
+
+resource "aws_acm_certificate_validation" "frontend" {
+  count           = var.domain_name != "" ? 1 : 0
+  provider        = aws.us_east_1
+  certificate_arn = aws_acm_certificate.frontend[0].arn
+
+  validation_record_fqdns = [
+    for record in aws_route53_record.acm_validation : record.fqdn
+  ]
 }
 
 # ── CloudFront Distribution ──────────────────────────────────────────────────
@@ -139,7 +185,6 @@ resource "aws_cloudfront_distribution" "frontend" {
     max_ttl     = 86400
   }
 
-  # SPA routing: return index.html for 403/404 so React Router handles the path
   custom_error_response {
     error_code            = 403
     response_code         = 200
@@ -162,10 +207,38 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   viewer_certificate {
     cloudfront_default_certificate = var.domain_name == "" ? true : false
-    acm_certificate_arn            = var.domain_name != "" ? aws_acm_certificate.frontend[0].arn : null
+    acm_certificate_arn            = var.domain_name != "" ? aws_acm_certificate_validation.frontend[0].certificate_arn : null
     ssl_support_method             = var.domain_name != "" ? "sni-only" : null
-    minimum_protocol_version       = var.domain_name != "" ? "TLSv1.2_2021" : "TLSv1.2_2021"
+    minimum_protocol_version       = "TLSv1.2_2021"
+  }
+
+  depends_on = [aws_acm_certificate_validation.frontend]
+}
+
+# ── Route 53: Alias record → CloudFront ──────────────────────────────────────
+
+resource "aws_route53_record" "frontend" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = aws_route53_zone.frontend[0].zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
   }
 }
 
-data "aws_caller_identity" "current" {}
+resource "aws_route53_record" "frontend_www" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = aws_route53_zone.frontend[0].zone_id
+  name    = "www.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
+  }
+}

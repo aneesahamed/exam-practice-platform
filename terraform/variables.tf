@@ -31,9 +31,9 @@ variable "project_name" {
 }
 
 variable "domain_name" {
-  description = "Custom domain for the frontend (e.g. examprep.dev). Leave empty to use CloudFront URL only."
+  description = "Custom domain for the frontend (e.g. aws.aneesahamed.co.uk). Leave empty to use CloudFront URL only."
   type        = string
-  default     = ""
+  default     = "aws.aneesahamed.co.uk"
 }
 
 variable "cognito_user_pool_name" {
@@ -58,4 +58,22 @@ variable "waf_enabled" {
   description = "Enable WAF Web ACL on CloudFront. Costs $5/month — disabled by default."
   type        = bool
   default     = false
+}
+
+variable "multi_region_enabled" {
+  description = "Enable multi-region active-passive failover. Costs ~$2-3/month — disabled by default."
+  type        = bool
+  default     = false
+}
+
+variable "primary_api_fqdn" {
+  description = "Primary API Gateway FQDN (without https://) — used for Route 53 health check"
+  type        = string
+  default     = ""
+}
+
+variable "secondary_api_fqdn" {
+  description = "Secondary region API Gateway FQDN — used for Route 53 failover record"
+  type        = string
+  default     = ""
 }
