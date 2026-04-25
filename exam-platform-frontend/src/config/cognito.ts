@@ -1,20 +1,20 @@
 import { Amplify } from 'aws-amplify';
 
-// Cognito configuration from backend deployment (Ireland region)
-export const cognitoConfig = {
+/**
+ * Cognito configuration
+ *
+ * Values are injected at build time via Vite environment variables.
+ * In CI/CD, these come from Terraform outputs (no hardcoding, no secrets).
+ * For local development, set them in .env.local
+ */
+Amplify.configure({
   Auth: {
     Cognito: {
-      userPoolId: 'eu-west-1_YqJFAZHjp',
-      userPoolClientId: '47d9g6od7uuaqc9hjq7vlp4jho',
-      region: 'eu-west-1',
+      userPoolId:       import.meta.env.VITE_COGNITO_USER_POOL_ID,
+      userPoolClientId: import.meta.env.VITE_COGNITO_CLIENT_ID,
       loginWith: {
         email: true,
       },
     },
   },
-};
-
-// Configure Amplify
-Amplify.configure(cognitoConfig);
-
-export default cognitoConfig;
+});
