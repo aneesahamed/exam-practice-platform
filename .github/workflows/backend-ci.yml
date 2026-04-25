@@ -99,6 +99,7 @@ jobs:
         working-directory: terraform
         run: |
           terraform init -reconfigure
+          terraform output -raw sam_deploy_bucket_name
           echo "cognito_user_pool_arn=$(aws cognito-idp describe-user-pool \
             --user-pool-id $(terraform output -raw cognito_user_pool_id) \
             --query 'UserPool.Arn' --output text)"         >> $GITHUB_OUTPUT
