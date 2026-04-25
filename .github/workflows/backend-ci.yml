@@ -2,7 +2,7 @@ name: Backend CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
     paths:
       - 'exam-platform-backend/**'
       - '.github/workflows/backend-ci.yml'
