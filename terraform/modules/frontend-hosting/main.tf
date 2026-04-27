@@ -98,11 +98,13 @@ data "aws_iam_policy_document" "frontend_bucket_policy" {
 # Created only when domain_name is provided.
 # After apply, copy the NS records shown in outputs to GoDaddy DNS.
 
-resource "aws_route53_zone" "frontend" {
+# ── Route 53: Hosted Zone ────────────────────────────────────────────────────
+# MIGRATED: The hosted zone is now managed by infra/layers/01-dns-foundation.
+# We read it here via data source so ACM validation records can reference it.
+
+data "aws_route53_zone" "frontend" {
   count = var.domain_name != "" ? 1 : 0
   name  = var.domain_name
-
-  comment = "Managed by Terraform — ${var.project_name} ${var.environment}"
 }
 
 # ── ACM Certificate (must be in us-east-1 for CloudFront) ───────────────────
@@ -132,7 +134,7 @@ resource "aws_route53_record" "acm_validation" {
     }
   } : {}
 
-  zone_id = aws_route53_zone.frontend[0].zone_id
+  zone_id = data.aws_route53_zone.frontend[0].zone_id
   name    = each.value.name
   type    = each.value.type
   records = [each.value.record]
@@ -219,7 +221,7 @@ resource "aws_cloudfront_distribution" "frontend" {
 
 resource "aws_route53_record" "frontend" {
   count   = var.domain_name != "" ? 1 : 0
-  zone_id = aws_route53_zone.frontend[0].zone_id
+  zone_id = data.aws_route53_zone.frontend[0].zone_id
   name    = var.domain_name
   type    = "A"
 
@@ -232,7 +234,7 @@ resource "aws_route53_record" "frontend" {
 
 resource "aws_route53_record" "frontend_www" {
   count   = var.domain_name != "" ? 1 : 0
-  zone_id = aws_route53_zone.frontend[0].zone_id
+  zone_id = data.aws_route53_zone.frontend[0].zone_id
   name    = "www.${var.domain_name}"
   type    = "A"
 
