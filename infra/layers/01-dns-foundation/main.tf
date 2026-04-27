@@ -48,4 +48,12 @@ provider "aws" {
 }
 
 # ── Route 53 Hosted Zone ─────────────────────────────────────────────────────
-# Placeholder — resource will be added in Phase 2
+# This resource was imported from the existing hosted zone
+# created by the old monolithic Terraform pipeline.
+# Import command used:
+#   terraform import aws_route53_zone.main Z0241761292H9T8SZMYBD
+
+resource "aws_route53_zone" "main" {
+  name    = "aws.aneesahamed.co.uk"
+  comment = "Managed by Terraform — exam-practice-platform"
+}
