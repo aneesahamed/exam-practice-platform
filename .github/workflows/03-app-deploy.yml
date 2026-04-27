@@ -1,0 +1,225 @@
+name: "03 — App Deploy"
+
+# Automatic on push to develop/main.
+# Reads all infrastructure values from SSM Parameter Store.
+# Does NOT create or modify any infrastructure resources.
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - "exam-platform-backend/**"
+      - "exam-platform-frontend/**"
+      - ".github/workflows/03-app-deploy.yml"
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "exam-platform-backend/**"
+      - "exam-platform-frontend/**"
+
+concurrency:
+  group: app-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: "eu-west-1"
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 1: Build & Test (runs on every push and PR)
+  # ════════════════════════════════════════════════════════════════════════════
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Backend — install & type check & test
+        working-directory: exam-platform-backend
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test -- --passWithNoTests
+
+      - name: Frontend — install & lint & type check
+        working-directory: exam-platform-frontend
+        run: |
+          npm ci
+          npm run lint
+          npx tsc --noEmit
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2: Deploy Backend (push only, reads from SSM)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-backend:
+    name: Deploy Backend
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ── Read infrastructure values from SSM ─────────────────────────────────
+      - name: Read SSM parameters
+        id: ssm
+        run: |
+          ENV=${{ steps.env.outputs.environment }}
+          echo "cognito_user_pool_arn=$(aws ssm get-parameter --name /app/${ENV}/cognito/user_pool_arn --query Parameter.Value --output text)"     >> $GITHUB_OUTPUT
+          echo "questions_bucket=$(aws ssm get-parameter --name /app/${ENV}/s3/questions_bucket --query Parameter.Value --output text)"             >> $GITHUB_OUTPUT
+          echo "progress_table=$(aws ssm get-parameter --name /app/${ENV}/dynamodb/progress_table --query Parameter.Value --output text)"           >> $GITHUB_OUTPUT
+          echo "flags_table=$(aws ssm get-parameter --name /app/${ENV}/dynamodb/flags_table --query Parameter.Value --output text)"                 >> $GITHUB_OUTPUT
+          echo "sam_bucket=$(aws ssm get-parameter --name /app/${ENV}/s3/sam_deployment_bucket --query Parameter.Value --output text)"             >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: exam-platform-backend/package-lock.json
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Install dependencies & esbuild
+        working-directory: exam-platform-backend
+        run: |
+          npm ci
+          npm install -g esbuild
+
+      - name: SAM Build
+        working-directory: exam-platform-backend
+        run: sam build
+
+      - name: SAM Deploy
+        working-directory: exam-platform-backend
+        run: |
+          sam deploy \
+            --stack-name exam-practice-platform-backend-${{ steps.env.outputs.environment }} \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --s3-bucket ${{ steps.ssm.outputs.sam_bucket }} \
+            --parameter-overrides \
+              Environment=${{ steps.env.outputs.environment }} \
+              CognitoUserPoolArn=${{ steps.ssm.outputs.cognito_user_pool_arn }} \
+              QuestionsBucketName=${{ steps.ssm.outputs.questions_bucket }} \
+              ProgressTableName=${{ steps.ssm.outputs.progress_table }} \
+              FlagsTableName=${{ steps.ssm.outputs.flags_table }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 3: Deploy Frontend (waits for backend, reads from SSM)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-frontend:
+    name: Deploy Frontend
+    needs: [build-and-test, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ── Read infrastructure values from SSM ─────────────────────────────────
+      - name: Read SSM parameters
+        id: ssm
+        run: |
+          ENV=${{ steps.env.outputs.environment }}
+          echo "cognito_user_pool_id=$(aws ssm get-parameter --name /app/${ENV}/cognito/user_pool_id --query Parameter.Value --output text)"         >> $GITHUB_OUTPUT
+          echo "cognito_client_id=$(aws ssm get-parameter --name /app/${ENV}/cognito/client_id --query Parameter.Value --output text)"               >> $GITHUB_OUTPUT
+          echo "frontend_bucket=$(aws ssm get-parameter --name /app/${ENV}/s3/frontend_bucket --query Parameter.Value --output text)"               >> $GITHUB_OUTPUT
+          echo "cloudfront_id=$(aws ssm get-parameter --name /app/${ENV}/cloudfront/distribution_id --query Parameter.Value --output text)"         >> $GITHUB_OUTPUT
+          echo "cloudfront_domain=$(aws ssm get-parameter --name /app/${ENV}/cloudfront/domain_name --query Parameter.Value --output text)"         >> $GITHUB_OUTPUT
+
+      - name: Get API URL from backend stack
+        id: api
+        run: |
+          ENV=${{ steps.env.outputs.environment }}
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name exam-practice-platform-backend-${ENV} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' \
+            --output text)
+          echo "url=${API_URL}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: exam-platform-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: exam-platform-frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: exam-platform-frontend
+        run: npm run build
+        env:
+          VITE_API_BASE_URL:         ${{ steps.api.outputs.url }}
+          VITE_COGNITO_USER_POOL_ID: ${{ steps.ssm.outputs.cognito_user_pool_id }}
+          VITE_COGNITO_CLIENT_ID:    ${{ steps.ssm.outputs.cognito_client_id }}
+          VITE_AWS_REGION:           ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
+        working-directory: exam-platform-frontend
+        run: |
+          aws s3 sync dist/ s3://${{ steps.ssm.outputs.frontend_bucket }} \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html"
+
+          aws s3 cp dist/index.html \
+            s3://${{ steps.ssm.outputs.frontend_bucket }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.ssm.outputs.cloudfront_id }} \
+            --paths "/*"
+
+      - name: Print live URL
+        run: echo "✅ Live at https://${{ steps.ssm.outputs.cloudfront_domain }}"

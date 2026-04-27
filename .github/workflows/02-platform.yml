@@ -1,0 +1,118 @@
+name: "02 — Platform Infrastructure"
+
+# Manual apply, PR plan only.
+# PREREQUISITE: DNS delegation must be confirmed before applying.
+# The workflow includes a pre-flight dig check that fails fast
+# if aws.aneesahamed.co.uk is not yet delegated to Route 53.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+      action:
+        description: "Terraform action to run"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "infra/layers/02-platform/**"
+
+concurrency:
+  group: platform-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: "eu-west-1"
+  TF_VERSION: "1.7.0"
+  WORKING_DIR: "infra/layers/02-platform"
+  DOMAIN_NAME: "aws.aneesahamed.co.uk"
+
+jobs:
+  platform:
+    name: "Platform — ${{ inputs.action || 'plan' }} (${{ inputs.environment || 'dev' }})"
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Pre-flight: verify DNS delegation before any Terraform apply ────────
+      - name: DNS delegation pre-flight check
+        if: inputs.action == 'apply'
+        run: |
+          echo "Checking DNS delegation for ${{ env.DOMAIN_NAME }}..."
+          RESULT=$(dig NS ${{ env.DOMAIN_NAME }} +short 2>/dev/null)
+          if echo "$RESULT" | grep -q "awsdns"; then
+            echo "✅ DNS delegation confirmed — Route 53 nameservers found"
+            echo "$RESULT"
+          else
+            echo "❌ DNS delegation NOT confirmed"
+            echo "Current NS records: $RESULT"
+            echo ""
+            echo "Please add the Route 53 NS records to GoDaddy first."
+            echo "See infra/layers/01-dns-foundation/README.md for instructions."
+            exit 1
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var="environment=${{ inputs.environment || 'dev' }}" \
+            -no-color 2>&1 | tee plan_output.txt
+
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ env.WORKING_DIR }}/plan_output.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.substring(0, 60000) + '\n...[truncated]' : plan;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Platform Infrastructure Plan 📋\n\`\`\`\n${truncated}\n\`\`\`\n*@${{ github.actor }}*`
+            });
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply' && github.event_name == 'workflow_dispatch'
+        run: |
+          terraform apply \
+            -var="environment=${{ inputs.environment }}" \
+            -auto-approve \
+            -no-color

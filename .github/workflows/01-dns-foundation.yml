@@ -1,0 +1,81 @@
+name: "01 — DNS Foundation"
+
+# Manual trigger only — this workflow runs once (or rarely).
+# It creates the Route 53 hosted zone and outputs the NS records
+# that must be added to GoDaddy before proceeding to Layer 02.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to run"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+
+concurrency:
+  group: dns-foundation
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: "eu-west-1"
+  TF_VERSION: "1.7.0"
+  WORKING_DIR: "infra/layers/01-dns-foundation"
+
+jobs:
+  dns-foundation:
+    name: "DNS Foundation — ${{ inputs.action }}"
+    runs-on: ubuntu-latest
+
+    # TODO Phase 2: Replace with OIDC role assumption
+    # permissions:
+    #   id-token: write
+    #   contents: read
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -no-color
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply'
+        run: terraform apply -auto-approve -no-color
+
+      - name: Output Route 53 nameservers
+        if: inputs.action == 'apply'
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  Route 53 Nameservers — add to GoDaddy"
+          echo "════════════════════════════════════════"
+          terraform output -json route53_name_servers 2>/dev/null || echo "No nameservers output yet (Phase 2)"
+          echo ""
+          echo "Next step: Add these 4 NS records in GoDaddy"
+          echo "Host: aws | Type: NS | TTL: 600"
+          echo "Then verify: dig NS aws.aneesahamed.co.uk"
