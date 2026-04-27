@@ -1,18 +1,14 @@
 /**
  * Frontend Hosting Module (old monolithic stack)
  *
- * MIGRATION IN PROGRESS:
- *   ACM certificate → migrated to infra/layers/02-platform (Phase 4A)
- *   CloudFront + S3  → will migrate to infra/layers/02-platform (Phase 4B)
- *   Route 53 records → will migrate to infra/layers/02-platform (Phase 4B)
+ * MIGRATION IN PROGRESS — Phase 4A:
+ *   ACM certificate → now owned by infra/layers/02-platform
+ *   This module reads the certificate via data source (does not manage it).
+ *   CloudFront continues using the custom ACM certificate unchanged.
+ *   Aliases remain in place.
  *
- * This module currently manages:
- *   - S3 frontend bucket
- *   - CloudFront distribution (using default certificate temporarily)
- *   - CloudFront OAC
- *
- * ACM and Route 53 resources have been removed from this module.
- * They are now managed exclusively by infra/layers/02-platform.
+ * Phase 4B will migrate CloudFront + S3 to Layer 02.
+ * Until then, CloudFront behaviour is unchanged.
  */
 
 data "aws_caller_identity" "current" {}
@@ -85,9 +81,27 @@ data "aws_iam_policy_document" "frontend_bucket_policy" {
   }
 }
 
+# ── ACM Certificate (read-only — now owned by Layer 02) ──────────────────────
+# ACM certificate is managed by infra/layers/02-platform.
+# We read it here so CloudFront can reference the validated ARN.
+# This does NOT manage the certificate — it only reads it.
+
+data "aws_acm_certificate" "frontend" {
+  provider = aws.us_east_1
+  domain   = var.domain_name
+  statuses = ["ISSUED"]
+}
+
+# ── Route 53: Hosted Zone (read-only — owned by Layer 01) ────────────────────
+
+data "aws_route53_zone" "frontend" {
+  count = var.domain_name != "" ? 1 : 0
+  name  = var.domain_name
+}
+
 # ── CloudFront Distribution ──────────────────────────────────────────────────
-# NOTE: Using default CloudFront certificate temporarily during migration.
-# Custom domain + ACM certificate will be attached in Phase 4B via Layer 02.
+# Unchanged from original — custom domain + ACM certificate remain in place.
+# CloudFront will be migrated to Layer 02 in Phase 4B.
 
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
@@ -96,8 +110,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class         = "PriceClass_All"
   comment             = "${var.project_name}-${var.environment}"
 
-  # No aliases during migration — custom domain handled by Layer 02 in Phase 4B
-  aliases = []
+  aliases = var.domain_name != "" ? [var.domain_name, "www.${var.domain_name}"] : []
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -145,7 +158,37 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.domain_name == "" ? true : false
+    acm_certificate_arn            = var.domain_name != "" ? data.aws_acm_certificate.frontend.arn : null
+    ssl_support_method             = var.domain_name != "" ? "sni-only" : null
     minimum_protocol_version       = "TLSv1.2_2021"
+  }
+}
+
+# ── Route 53: Alias record → CloudFront ──────────────────────────────────────
+
+resource "aws_route53_record" "frontend" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = data.aws_route53_zone.frontend[0].zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "frontend_www" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = data.aws_route53_zone.frontend[0].zone_id
+  name    = "www.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.frontend.domain_name
+    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
+    evaluate_target_health = false
   }
 }

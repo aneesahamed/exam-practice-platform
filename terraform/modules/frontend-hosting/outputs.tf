@@ -19,11 +19,11 @@ output "cloudfront_domain_name" {
 }
 
 output "site_url" {
-  description = "CloudFront URL (custom domain will be in Layer 02 after Phase 4B)"
-  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+  description = "Live URL — custom domain if configured, otherwise CloudFront URL"
+  value       = var.domain_name != "" ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.frontend.domain_name}"
 }
 
 output "route53_zone_id" {
-  description = "Placeholder — Route 53 zone managed by Layer 01"
-  value       = null
+  description = "Route 53 zone ID — read from DNS foundation layer"
+  value       = var.domain_name != "" ? data.aws_route53_zone.frontend[0].zone_id : null
 }
