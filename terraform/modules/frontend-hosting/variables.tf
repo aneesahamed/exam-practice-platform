@@ -13,3 +13,9 @@ variable "domain_name" {
   type        = string
   default     = ""
 }
+
+variable "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID — managed by Layer 02, passed in for data source lookup"
+  type        = string
+  default     = "E11JHAQVQWECRV"
+}
