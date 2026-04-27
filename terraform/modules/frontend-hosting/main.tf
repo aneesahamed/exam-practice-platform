@@ -1,27 +1,18 @@
 /**
- * Frontend Hosting Module
+ * Frontend Hosting Module (old monolithic stack)
  *
- * Provisions:
- *   - S3 bucket for React SPA (private — CloudFront OAC only)
- *   - CloudFront distribution (HTTPS, SPA routing, OAC)
- *   - ACM certificate in us-east-1 (CloudFront requirement)
- *   - Route 53 hosted zone for subdomain (when domain_name is set)
- *   - Route 53 alias record → CloudFront
- *   - ACM DNS validation records in Route 53 (fully automated)
+ * MIGRATION IN PROGRESS:
+ *   ACM certificate → migrated to infra/layers/02-platform (Phase 4A)
+ *   CloudFront + S3  → will migrate to infra/layers/02-platform (Phase 4B)
+ *   Route 53 records → will migrate to infra/layers/02-platform (Phase 4B)
  *
- * When domain_name = "" (default):
- *   - CloudFront URL only, no custom domain, no Route 53, no ACM
+ * This module currently manages:
+ *   - S3 frontend bucket
+ *   - CloudFront distribution (using default certificate temporarily)
+ *   - CloudFront OAC
  *
- * When domain_name = "aws.aneesahamed.co.uk":
- *   - Route 53 hosted zone created for aws.aneesahamed.co.uk
- *   - ACM certificate issued and auto-validated via Route 53
- *   - CloudFront alias record created
- *   - You add the NS records from Route 53 to GoDaddy once (manual, 5 min)
- *
- * Interview talking point:
- *   "I delegated the subdomain from GoDaddy to Route 53 by adding NS records.
- *    Route 53 manages all DNS for the subdomain — alias record to CloudFront,
- *    ACM certificate validation. Everything is in Terraform, fully reproducible."
+ * ACM and Route 53 resources have been removed from this module.
+ * They are now managed exclusively by infra/layers/02-platform.
  */
 
 data "aws_caller_identity" "current" {}
@@ -94,64 +85,9 @@ data "aws_iam_policy_document" "frontend_bucket_policy" {
   }
 }
 
-# ── Route 53: Hosted Zone for subdomain ──────────────────────────────────────
-# Created only when domain_name is provided.
-# After apply, copy the NS records shown in outputs to GoDaddy DNS.
-
-# ── Route 53: Hosted Zone ────────────────────────────────────────────────────
-# MIGRATED: The hosted zone is now managed by infra/layers/01-dns-foundation.
-# We read it here via data source so ACM validation records can reference it.
-
-data "aws_route53_zone" "frontend" {
-  count = var.domain_name != "" ? 1 : 0
-  name  = var.domain_name
-}
-
-# ── ACM Certificate (must be in us-east-1 for CloudFront) ───────────────────
-
-resource "aws_acm_certificate" "frontend" {
-  count    = var.domain_name != "" ? 1 : 0
-  provider = aws.us_east_1
-
-  domain_name               = var.domain_name
-  subject_alternative_names = ["www.${var.domain_name}"]
-  validation_method         = "DNS"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# ── ACM DNS Validation records in Route 53 (fully automated) ─────────────────
-
-resource "aws_route53_record" "acm_validation" {
-  for_each = var.domain_name != "" ? {
-    for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
-    dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  } : {}
-
-  zone_id = data.aws_route53_zone.frontend[0].zone_id
-  name    = each.value.name
-  type    = each.value.type
-  records = [each.value.record]
-  ttl     = 60
-}
-
-resource "aws_acm_certificate_validation" "frontend" {
-  count           = var.domain_name != "" ? 1 : 0
-  provider        = aws.us_east_1
-  certificate_arn = aws_acm_certificate.frontend[0].arn
-
-  validation_record_fqdns = [
-    for record in aws_route53_record.acm_validation : record.fqdn
-  ]
-}
-
 # ── CloudFront Distribution ──────────────────────────────────────────────────
+# NOTE: Using default CloudFront certificate temporarily during migration.
+# Custom domain + ACM certificate will be attached in Phase 4B via Layer 02.
 
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
@@ -160,7 +96,8 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class         = "PriceClass_All"
   comment             = "${var.project_name}-${var.environment}"
 
-  aliases = var.domain_name != "" ? [var.domain_name, "www.${var.domain_name}"] : []
+  # No aliases during migration — custom domain handled by Layer 02 in Phase 4B
+  aliases = []
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -208,39 +145,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = var.domain_name == "" ? true : false
-    acm_certificate_arn            = var.domain_name != "" ? aws_acm_certificate_validation.frontend[0].certificate_arn : null
-    ssl_support_method             = var.domain_name != "" ? "sni-only" : null
+    cloudfront_default_certificate = true
     minimum_protocol_version       = "TLSv1.2_2021"
-  }
-
-  depends_on = [aws_acm_certificate_validation.frontend]
-}
-
-# ── Route 53: Alias record → CloudFront ──────────────────────────────────────
-
-resource "aws_route53_record" "frontend" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = data.aws_route53_zone.frontend[0].zone_id
-  name    = var.domain_name
-  type    = "A"
-
-  alias {
-    name                   = aws_cloudfront_distribution.frontend.domain_name
-    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
-    evaluate_target_health = false
-  }
-}
-
-resource "aws_route53_record" "frontend_www" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = data.aws_route53_zone.frontend[0].zone_id
-  name    = "www.${var.domain_name}"
-  type    = "A"
-
-  alias {
-    name                   = aws_cloudfront_distribution.frontend.domain_name
-    zone_id                = aws_cloudfront_distribution.frontend.hosted_zone_id
-    evaluate_target_health = false
   }
 }
