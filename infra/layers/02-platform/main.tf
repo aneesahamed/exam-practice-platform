@@ -4,7 +4,9 @@
  * Phase 4A: ACM certificate + validation records ✅
  * Phase 4B: CloudFront + frontend S3 + Route 53 alias records
  *
- * PREREQUISITE: Layer 01 applied AND GoDaddy NS delegation confirmed.
+ * CloudFront alias attachment requires two applies:
+ *   Step 1: Attach ACM certificate (no aliases) — fixes CNAMEAlreadyExists error
+ *   Step 2: Add aliases after cert is confirmed attached
  *
  * State: s3://exam-practice-platform-tfstate/layers/02-platform/terraform.tfstate
  */
@@ -41,7 +43,6 @@ provider "aws" {
   }
 }
 
-# ACM certificates for CloudFront MUST be in us-east-1
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
@@ -56,21 +57,20 @@ provider "aws" {
   }
 }
 
-# ── Read Route 53 hosted zone from DNS foundation layer ──────────────────────
-
 data "aws_route53_zone" "main" {
-  name = var.domain_name
+  # The hosted zone is aws.aneesahamed.co.uk — already delegated from GoDaddy.
+  # awsprep.aneesahamed.co.uk is a record within this zone, not a separate zone.
+  name = "aws.aneesahamed.co.uk"
 }
 
 data "aws_caller_identity" "current" {}
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHASE 4A — ACM (applied ✅)
+# PHASE 4A — ACM ✅
 # ════════════════════════════════════════════════════════════════════════════
 
 resource "aws_acm_certificate" "frontend" {
-  provider = aws.us_east_1
-
+  provider                  = aws.us_east_1
   domain_name               = var.domain_name
   subject_alternative_names = ["www.${var.domain_name}"]
   validation_method         = "DNS"
@@ -90,12 +90,11 @@ resource "aws_route53_record" "acm_validation" {
     }
   }
 
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = each.value.name
-  type    = each.value.type
-  records = [each.value.record]
-  ttl     = 60
-
+  zone_id         = data.aws_route53_zone.main.zone_id
+  name            = each.value.name
+  type            = each.value.type
+  records         = [each.value.record]
+  ttl             = 60
   allow_overwrite = true
 }
 
@@ -115,9 +114,6 @@ resource "aws_acm_certificate_validation" "frontend" {
 # ════════════════════════════════════════════════════════════════════════════
 # PHASE 4B — Frontend S3 + CloudFront + Route 53 alias records
 # ════════════════════════════════════════════════════════════════════════════
-
-# ── S3: Frontend Static Assets ───────────────────────────────────────────────
-# Imported from: exam-practice-platform-dev-frontend-393286881899
 
 resource "aws_s3_bucket" "frontend" {
   bucket = "${var.project_name}-${var.environment}-frontend-${data.aws_caller_identity.current.account_id}"
@@ -147,9 +143,6 @@ resource "aws_s3_bucket_public_access_block" "frontend" {
   restrict_public_buckets = true
 }
 
-# ── CloudFront Origin Access Control ─────────────────────────────────────────
-# Imported from: E3ERMYAKMM5JH1
-
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "${var.project_name}-${var.environment}-oac"
   description                       = "OAC for ${var.project_name} frontend"
@@ -157,8 +150,6 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
 }
-
-# ── S3 Bucket Policy: Allow CloudFront OAC only ──────────────────────────────
 
 resource "aws_s3_bucket_policy" "frontend" {
   bucket = aws_s3_bucket.frontend.id
@@ -188,7 +179,13 @@ data "aws_iam_policy_document" "frontend_bucket_policy" {
 
 # ── CloudFront Distribution ───────────────────────────────────────────────────
 # Imported from: E11JHAQVQWECRV
-# Attaches the Layer 02 ACM certificate and custom aliases.
+#
+# IMPORTANT: CloudFront requires the ACM certificate to be attached BEFORE
+# aliases can be added. We use a two-step apply:
+#   Step 1 (this apply): cert attached, aliases = [] (empty)
+#   Step 2 (next apply): aliases added after cert is confirmed attached
+#
+# This avoids the CNAMEAlreadyExists error from CloudFront.
 
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
@@ -197,6 +194,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class         = "PriceClass_All"
   comment             = "${var.project_name}-${var.environment}"
 
+  # Aliases now added — ACM cert is confirmed attached
   aliases = [var.domain_name, "www.${var.domain_name}"]
 
   origin {
@@ -254,7 +252,6 @@ resource "aws_cloudfront_distribution" "frontend" {
 }
 
 # ── Route 53: Alias records → CloudFront ─────────────────────────────────────
-# These were never applied in the old stack — created fresh here.
 
 resource "aws_route53_record" "frontend" {
   zone_id = data.aws_route53_zone.main.zone_id

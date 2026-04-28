@@ -22,5 +22,5 @@ variable "project_name" {
 variable "domain_name" {
   description = "Custom domain for the frontend"
   type        = string
-  default     = "aws.aneesahamed.co.uk"
+  default     = "awsprep.aneesahamed.co.uk"
 }
