@@ -58,9 +58,7 @@ provider "aws" {
 }
 
 data "aws_route53_zone" "main" {
-  # The hosted zone is aws.aneesahamed.co.uk — already delegated from GoDaddy.
-  # awsprep.aneesahamed.co.uk is a record within this zone, not a separate zone.
-  name = "aws.aneesahamed.co.uk"
+  name = var.domain_name
 }
 
 data "aws_caller_identity" "current" {}
